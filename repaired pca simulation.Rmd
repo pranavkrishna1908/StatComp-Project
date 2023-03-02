@@ -1,0 +1,387 @@
+---
+title: "Project_2_SCV"
+author: "Lucas Reymond"
+date: "11/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(MASS)
+library(Matrix)
+library(rlist)
+library(functClust) 
+library(mvtnorm)
+library(stats)
+library(lattice)
+library(pracma)
+
+#################################################################
+#Implementation of the CV for PCA repaired 
+
+
+
+
+CV_PCA<-function(n, p, real_rank, K, Nb_of_runs, pred.method = c("iid residuals", "no residuals"), pred.plot = FALSE, change_to_zero_under=0,using_drop=FALSE, val_for_drop=0)
+#CV_PCA<-function(n, p, real_rank, K, Nb_of_runs, pred.method, pred.plot = FALSE, change_to_zero_under=0,using_drop=FALSE, val_for_drop=0)
+{
+  pred.method <- match.arg(pred.method)
+  vector_of_r_opt<-rep(0,p)
+
+  for(count_nb_run in 1:Nb_of_runs)
+  {
+    #Generate the matrix X
+    M<-matrix(rnorm(p*p,0,1), p, p)
+    Sigma_full_rank<-t(M)%*%M
+    Eig<-eigen(Sigma_full_rank)
+    V<-Eig$vectors
+    val<-Eig$values
+    val[-(1:real_rank)]<-0
+    Sigma<-V%*%diag(val)%*%t(V)
+    
+    X<-matrix(0,n,p)
+    if(!Test_t_multivariate & !Test_log_return) #to use normal multivariate distribution
+    {
+      for (i in 1:n)
+      {
+        mu<-rep(0,p)
+        x<-mvrnorm(n=1, mu=mu, Sigma)
+        noise<-0.1*mvrnorm(n=p,0,1)
+        X[i,]<-x + noise
+      } 
+    }
+    if (Test_t_multivariate) #to use t-multivariate distribution
+    {
+      for (i in 1:n)
+      {
+        mu<-rep(0,p)
+        x<-rmvt(n=1, sigma = Sigma, df = 1, delta = rep(0, p), type = c("Kshirsagar"))
+        noise<-0.1*mvrnorm(n=p,0,1)
+        X[i,]<-x + t(noise) 
+      }
+    }
+
+    if (Test_log_return)
+    {
+      X<-data_log_return
+    }
+    
+###################################
+    
+#L_saved<-list()
+
+
+#Now we want to find r that minimizes the sum over K of |J_k|^(-1)*Err_k(r)
+To_min<-c() #will contain the values sum over K of |J_k|^(-1)*Err_k(r) for different r
+
+for (r in 1:10)
+{
+  ind<-matrix(sample(1:n),ncol=K) #we split the indices of X into K sets
+  
+  
+  A_r<-0 #the quantity that we want to minimize
+  ###A_r_vect<-rep(0,p)
+  
+  for (k in 1:K)
+  {
+    #mu_est<-matrix(0,1,p)
+    ind_X3<-ind[,-k]
+    X3<-X[ind_X3,]
+    n_X3<-n-n/K  #n-n/K is the number of rows of X3
+    #Need n/K >=2 to have a missing part and observed part
+    #for (i in 1:n_X3)  
+   # {
+      
+   #   mu_est<-mu_est+X3[i,]
+    #}    
+    #mu_est<-mu_est/n_X3 #this is the estimated mu, using X3
+    mu_est<-colMeans(X3)
+    
+    cov_est<-cov(x=X3, use="everything")
+    
+    A_r<-0 #the quantity that we want to minimize
+    
+    #HERE I COMPUTE L THE LOW RANK APPROXIMATION OF COV_EST
+    SVD<-svd(cov_est)
+    
+    d<-SVD$d #vector containing the singular values of cov_est
+    U<-SVD$u #matrix whose columns contain the left singular vectors of cov_est
+    V<-SVD$v #matrix whose columns contain the right singular vectors of cov_est
+    
+    if(pred.method == "iid residuals") {
+      #don't lose variance of data by low rank approximation to subspace ...
+      d0 <- sum(tail(d, -r))
+    } else {
+      # corresponds to old version (or with small d0 <- .01 respectively)
+      d0 <- 0
+    }
+    
+    d[-(1:r)]<-0
+    L<-U%*%diag(d)%*%t(V)
+    
+    cov_est<-L +d0/p*diag(p) 
+   
+ #   L_saved[[r]]<-L
+    
+    
+    Err_k_r<-0 #we will compute this in the for loop
+    for (j in ind[,k])
+    {
+      X_j<-X[j,]
+      #we split X_j into a missing part and an observed part
+      
+      ind_Xj<-matrix(sample(1:p),ncol=2)
+      ind_obs<-ind_Xj[,1]
+      ind_miss<-ind_Xj[,2]
+      
+      #Now we will predict X_j_miss using X_j_obs and conditional Gaussiannity
+      cov_est_22<-cov_est[ind_obs,ind_obs]
+      cov_est_12<-cov_est[ind_miss,ind_obs]
+      
+      X_j_pred<-mu_est[ind_miss]+cov_est_12 %*% pinv(cov_est_22)%*%((X_j[ind_obs]-mu_est[ind_obs])) #it is the formula from slide 21 lecture 6
+      
+      Err_k_r<-Err_k_r+norm(X_j[ind_miss]-X_j_pred, type="2")**2   
+      
+    }
+    A_r<-Err_k_r/length(ind[,k]) 
+    ###A_r_vect[r]<-A_r_vect[r]+Err_k_r/length(ind[,k]) 
+  }
+  
+  
+  
+  if(A_r<change_to_zero_under)
+  {
+    A_r<-0  
+  }
+  
+  if(using_drop & r!=1)
+    if(A_r<val_for_drop*To_min[(r-1)])
+    {
+      {
+        A_r<-0
+      }
+    }
+
+  
+  To_min<-append(To_min, A_r)
+  ###To_min<-A_r_vect
+}
+#print("To_min")
+#print(To_min)
+
+
+To_min<-as.numeric(To_min)
+r_opt=which.min(To_min)
+#print("r_opt=")
+#print(r_opt)
+#print("L_saved[[r_opt]]")
+#print(L_saved[[r_opt]])
+
+
+vector_of_r_opt[r_opt]<-vector_of_r_opt[r_opt]+1
+
+  }
+  return(vector_of_r_opt)
+}
+
+
+######################################################
+
+
+
+
+#vector_r_opt<-CV_PCA(X, n, p, K,5)
+
+
+#print("vector_r_opt")
+#print(vector_r_opt)
+
+
+
+
+
+
+###############################################################
+
+#n<-500 #number of sample
+p<-10 #dimension of each multivariate Gaussian
+K<-5 #easier if K divide n
+
+Nb_runs<-100
+#precision<-2.220446e-16  #correspond .Machine$double.eps
+precision<-0
+#precision<-10^(-12)
+using_drop<-FALSE
+#using_drop<-TRUE
+val_for_drop<-10^(-1)
+
+#Test_t_multivariate<-TRUE
+Test_t_multivariate<-FALSE
+Test_log_return<-FALSE
+
+if(Test_log_return)
+{
+  CRTO <- read.csv("CRTO.csv")
+  DBVT <- read.csv("DBVT.csv")
+  EDAP <- read.csv("EDAP.csv")
+  AAP <- read.csv("AAP.csv")
+  AB <- read.csv("AB.csv")
+  AEO <- read.csv("AEO.csv")
+  AKR <- read.csv("AKR.csv")
+  ALSN <- read.csv("ALSN.csv")
+  AMC <- read.csv("AMC.csv")
+  AME<- read.csv("AME.csv")
+  crto = CRTO[,c(3,6)]
+  dbvt = DBVT[,c(3,6)]
+  edap = EDAP[,c(3,6)]
+  aap = AAP[,c(3,6)]
+  ab = AB[,c(3,6)]
+  aeo = AEO[,c(3,6)]
+  akr = AKR[,c(3,6)]
+  alsn = ALSN[,c(3,6)]
+  amc = AMC[,c(3,6)]
+  ame = AME[,c(3,6)]
+  crto = rev(log(crto[,2]/crto[,1]))[1:2050]
+  dbvt = rev(log(dbvt[,2]/dbvt[,1]))[1:2050]
+  edap = rev(log(edap[,2]/edap[,1]))[1:2050]
+  aap = rev(log(aap[,2]/aap[,1]))[1:2050]
+  ab = rev(log(ab[,2]/ab[,1]))[1:2050]
+  aeo = rev(log(aeo[,2]/aeo[,1]))[1:2050]
+  akr = rev(log(akr[,2]/akr[,1]))[1:2050]
+  alsn = rev(log(alsn[,2]/alsn[,1]))[1:2050]
+  amc = rev(log(amc[,2]/amc[,1]))[1:2050]
+  ame = rev(log(ame[,2]/ame[,1]))[1:2050]
+  data_log_return = cbind(crto, dbvt, edap, aap,ab, aeo, akr, alsn, amc, ame)
+  #data = as.data.frame(data)
+ # colnames(data) = c('CRTO', 'DBVT', 'EDAP', 'AAP', 'AB', 'AEO', 'AKR', 'ALSN', 'AMC', 'AME')
+}
+Result<-matrix(0,5,10)
+
+for(rank in 10:10)
+{
+  for(size_n in 1:5)
+  {
+    n<-100*size_n
+    
+    print(rank+n)
+
+    Vect<-CV_PCA(n, p, rank, K, Nb_runs, "iid residuals", pred.plot = FALSE, change_to_zero_under=precision, using_drop, val_for_drop)
+    
+    Result[size_n, rank]<-Vect[rank]
+    
+  }
+}
+
+print(Result)
+
+
+print(xtable(Result, digits = 0),
+      format.args = list(big.mark = " ", decimal.mark = ","))
+
+#Result_df<-as.data.frame(Result)
+#colnames(Result_df)  <- c(1:10)
+
+#vect_prop<-0.1*c(1:9)
+#Result_df<-cbind(vect_prop, Result_df)
+
+
+#print(Result_df)
+
+
+
+
+
+
+#################################################################
+
+#library(mdatools)
+
+
+# create pseudo-validation set
+#spectra_pv = pcv(X, ncomp = 10, nseg = 50)
+
+# show plot with original and generated spectra
+#par(mfrow = c(2, 1))
+
+#mdaplot(spectra_pv, type = "l", main = "Pseudo-validation")
+
+
+
+```
+
+```{r}
+
+temp<-read.csv(file ='city_temperature_copy.csv')
+head(temp)
+CRTO <- read.csv("CRTO.csv")
+head(CRTO)
+
+
+temp_Helsinki_2019<-temp[(711923+1):(712287+1),8]
+temp_Geneva_2019<-temp[(958540+1):(958904+1),8]
+temp_Stockholm_2019<-temp[(940008+1):(940372+1),8]
+temp_Barcelona_2019<-temp[(912210+1):(912574+1),8]
+temp_Munich_2019<-temp[(755237+1):(755601+1),8]
+temp_Bordeaux_2019<-temp[(730455+1):(730819+1),8]
+temp_Dublin_2019<-temp[(793988+1):(794352+1),8]
+temp_Milan_2019<-temp[(803254+1):(803618+1),8]
+temp_Riga_2019<-temp[(821786+1):(822150+1),8]
+temp_Prague_2019<-temp[(693391+1):(693755+1),8]
+
+head(temp_Helsinki_2019)
+head(temp_Geneva_2019)
+head(temp_Stockholm_2019)
+head(temp_Barcelona_2019)
+head(temp_Munich_2019)
+head(temp_Bordeaux_2019)
+
+
+print(length(temp_Helsinki_2019))
+print(length(temp_Geneva_2019))
+print(length(temp_Stockholm_2019))
+print(length(temp_Barcelona_2019))
+print(length(temp_Munich_2019))
+print(length(temp_Bordeaux_2019))
+print(length(temp_Dublin_2019))
+print(length(temp_Milan_2019))
+print(length(temp_Riga_2019))
+print(length(temp_Prague_2019))
+
+City=matrix(c(temp_Helsinki_2019, temp_Geneva_2019, temp_Stockholm_2019, temp_Barcelona_2019, temp_Munich_2019, temp_Bordeaux_2019, temp_Dublin_2019, temp_Milan_2019, temp_Riga_2019, temp_Prague_2019), nrow=365, ncol=10, byrow=FALSE)
+length(City)
+head(City)
+
+#We center the data around 0
+rowMeans(City)
+City<-City-rowMeans(City)
+
+City
+S<-sd(City)
+City<-City/S
+
+
+
+p<-10
+n<-365
+
+vector_r_opt_city<-CV_PCA(City, n, p, K,50)
+
+
+print("vector_r_opt_city")
+print(vector_r_opt_city)
+
+
+```
+
+
+
+
+
+
+
+

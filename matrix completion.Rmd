@@ -1,0 +1,281 @@
+---
+title: "Untitled"
+author: "Lucas Reymond"
+date: "12/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r,warning=FALSE}
+
+library(MASS)
+library(Matrix)
+library(rlist)
+library(functClust) #for the argmin function
+library(mvtnorm)
+library(stats)
+library(lattice)
+library(pracma)
+library(ramify)
+library(gt)
+library(lazyWeave)
+library(xtable)
+library(tidyverse)
+library(glue)
+
+#Vect<-Algo_4(n, p, Nb_runs, prop_deleted, change_to_zero_under=precision, using_drop, val_for_drop, use_t_multivariate)
+
+
+Algo_4<-function(n, p,real_rank, Nb_of_runs, prop_deleted, change_to_zero_under=0,using_drop=FALSE, val_for_drop=0)
+{
+  vector_of_r_opt<-rep(0,p)
+  
+  for(count_nb_run in 1:Nb_of_runs)
+  {
+    #Generate the matrix X
+    M<-matrix(rnorm(p*p,0,1), p, p)
+    Sigma_full_rank<-t(M)%*%M
+    Eig<-eigen(Sigma_full_rank)
+    V<-Eig$vectors
+    val<-Eig$values
+    val[-(1:real_rank)]<-0
+    Sigma<-V%*%diag(val)%*%t(V)
+    #print("okay3")
+    X<-matrix(0,n,p)
+    if(!Test_t_multivariate) #to use normal multivariate distribution
+    {
+      #print("Using normal multivariate distribution")
+      for (i in 1:n)
+      {
+        mu<-rep(0,p)
+        x<-mvrnorm(n=1, mu, Sigma)
+        noise<-0.0*mvrnorm(n=p,0,1)
+        X[i,]<-x + noise
+      } 
+    }
+    #print("okay4")
+    if (Test_t_multivariate) #to use t-multivariate distribution
+    {
+      #print("Using t-multivariate distribution")
+      for (i in 1:n)
+      {
+        mu<-rep(0,p)
+        #print("okay6")
+        x<-rmvt(n=1, sigma = Sigma, df = 1, delta = rep(0, p), type = c("Kshirsagar"))
+        #print("okay7")
+        noise<-0.0*mvrnorm(n=p,0,1)
+        #print("okay8")
+        X[i,]<-x + t(noise)
+        #print("okay9")
+      }
+    }
+    #print("okay5")
+
+Omega<-matrix(1,n,p)
+X_missing<-X
+
+  del<-sample(1:(p*n), size=floor(p*n*prop_deleted ), replace = FALSE)
+  
+  X_missing<-resize(X_missing, nrow=1, ncol=(n*p), byrow = TRUE)
+  Omega<-resize(Omega, nrow=1,ncol=(n*p), byrow=TRUE)
+  
+  X_missing[del]<-NA
+  Omega[del]<-0       #matrix Omega contains 0 if the value is missing and 1 otherwise
+  
+  X_missing<-resize(X_missing, nrow=n, ncol=p, byrow=TRUE)
+  Omega<-resize(Omega, nrow=n, ncol=p, byrow=TRUE)
+
+
+To_min<-c()
+for(r in (1+0):(p-0))
+{
+  
+  M_new<-X
+  M_old<-M_new+1
+  iter<-0
+  while(norm((M_old-M_new), type = "F")>0.1 & iter<1000)
+  {
+    M_old<-M_new
+    
+    SVD<-svd(M_old)
+    d<-SVD$d 
+    U<-SVD$u 
+    V<-SVD$v
+    
+    d[-(1:r)]<-0
+    M_tilde<-U%*%diag(d)%*%t(V)
+    
+    for(i in 1:n)
+    {
+      #M_new[i,delete_mat[i,]]<-M_tilde[i,delete_mat[i,]]
+      #M_new[i,delete[i]]<-M_tilde[i,delete[i]]
+      M_new[i,which(Omega[i,]==0)]<-M_tilde[i,which(Omega[i,]==0)]
+    }
+    iter<-iter+1
+    
+  }
+  sum_over_Omega<-0.0
+  for(i in 1:n)
+  {
+    A<-FALSE
+    if(A & length(which(Omega[i,]==1))!=0)
+    {
+      #print("went in if")
+      #print(norm(X[i,which(Omega[i,]==0)]-M_new[i,which(Omega[i,]==0)], type="2")**2)
+      sum_over_Omega<-sum_over_Omega+norm(X[i,which(Omega[i,]==0)]-M_new[i,which(Omega[i,]==0)], type="2")**2  
+      
+    }
+    sum_over_Omega<-sum_over_Omega+norm(X[i,]-M_new[i,], type="2")**2
+    
+    
+  }
+  #if the error is smaller than change_to_zero_under, we say it's zero (and the computer did not find 0 because it's not perfect)
+  if(sum_over_Omega<change_to_zero_under)
+  {
+    sum_over_Omega<-0  
+  }
+  
+  if(using_drop & r!=1)
+    if(sum_over_Omega<val_for_drop*To_min[(r-1)])
+    {
+      {
+        sum_over_Omega<-0
+      }
+    }
+  
+  To_min<-append(To_min, sum_over_Omega)
+  
+}
+
+#print(To_min)
+#plot(To_min, main="Real rank=3 and 50% of the entries deleted", xlab="Possible rank", ylab="Value to minimize")
+
+
+
+
+To_min<-as.numeric(To_min)
+r_opt=which.min(To_min)
+#print("r_opt=")
+#print(r_opt)
+
+vector_of_r_opt[r_opt]<-vector_of_r_opt[r_opt]+1
+  }
+  
+  return(vector_of_r_opt)
+}
+
+
+##################################################
+
+n<-10 #number of sample
+p<-10
+
+
+
+M<-matrix(rnorm(p*p,0,1), p, p)
+Sigma_full_rank<-t(M)%*%M
+Eig<-eigen(Sigma_full_rank)
+V<-Eig$vectors
+val<-Eig$values
+val[-(1:3)]<-0
+Sigma<-V%*%diag(val)%*%t(V)
+#########################
+
+X<-matrix(0,n,p)
+for (i in 1:n)
+{
+  mu<-rep(0,p)
+  x<-mvrnorm(n=1, mu, Sigma)
+  noise<-0.0*mvrnorm(n=p,0,1)
+  X[i,]<-x + noise
+} 
+
+
+##################################################
+#n<-10
+#p<-10
+
+#Vect<-Algo_4(X, n, p, 50, prop_deleted = 0.1, 2.220446e-16)
+
+#print(Vect)
+
+
+
+##################################################
+n<-10
+p<-10
+Nb_runs<-100
+#precision<-2.220446e-16  #correspond .Machine$double.eps
+precision<-0
+#precision<-10^(-12)
+#using_drop<-FALSE
+using_drop<-TRUE
+val_for_drop<-10^(-10)
+#val_for_drop<-0
+Test_t_multivariate<-TRUE
+#Test_t_multivariate<-FALSE
+
+Result<-matrix(0,9,10)
+
+for(rank in 1:10)
+{
+  for(prop_removed in 1:9)
+  {
+    prop_deleted<-0.1*prop_removed
+    
+    print(rank+prop_deleted)
+
+
+    Vect<-Algo_4(n, p, real_rank=rank, Nb_runs, prop_deleted, change_to_zero_under=precision, using_drop, val_for_drop)
+    Result[prop_removed, (rank-0)]<-Vect[(rank-0)]
+    
+    
+    
+  }
+  
+    
+  
+  
+}
+
+print(Result)
+
+
+#Table<-lazy.matrix(Result, align = "center", justify = "center", rcol = NULL,
+#  usecol = "lightgray", caption = NULL, footnote = NULL,
+#  placement = "h", translate = TRUE, cat = getOption("lazyWeave_cat"))
+
+print(xtable(Result, digits = 0),
+      format.args = list(big.mark = " ", decimal.mark = ","))
+
+
+#Result_df<-as.data.frame(Result)
+#colnames(Result_df)  <- c(2:10)
+
+#vect_prop<-0.1*c(1:9)
+#Result_df<-cbind(vect_prop, Result_df)
+
+
+#print(Result_df)
+
+###########################
+
+
+
+
+Vect<-Algo_4(n, p, real_rank=3, 1, 0.5, change_to_zero_under=precision, using_drop, val_for_drop)
+
+
+```
+ 
+
+
+
+
+
